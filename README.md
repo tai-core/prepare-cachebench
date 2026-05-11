@@ -1,6 +1,15 @@
 # Cache Chain Benchmark
 在绝对路径 `/mnt/beegfs/khr/bench` 下
 
+## 运行环境
+
+```bash
+ssh g0033
+tmux new-session -s vllm-bench
+conda activate vllm_test
+cd /mnt/beegfs/khr/bench
+```
+
 This package provides two complementary strategies for prefix-cache chain benchmarking,
 sharing the same runner (`scheduled_openai_chat_bench.py`).
 
@@ -25,6 +34,36 @@ sharing the same runner (`scheduled_openai_chat_bench.py`).
 - `generate_prefix_chain_datasets.py` — 从 A 生成 B/C（合成填充文本）
 - `split_conversation_chain.py` — 从 bench.jsonl 长对话切分出 A/B/C 前置链
 - `CACHE_CHAIN_BENCH_README.md` — 本文档
+
+---
+
+## 并发控制
+
+`scheduled_openai_chat_bench.py` 提供两层并发控制：
+
+| 参数 | 控制范围 | 释放时机 |
+|---|---|---|
+| `--max-concurrency N` | **总** in-flight 请求数 | 请求完成 |
+| `--max-prefill-concurrency N` | **prefill 阶段** 的请求数 | 首 token 到达 |
+
+**关键区别**：`--max-concurrency` 对 prefill 和 decode 一视同仁——请求完成前都占着槽位。
+`--max-prefill-concurrency` 只限制 prefill 队列：首 token 一到立即释放，排队的下一个请求马上进入 prefill。
+
+```
+请求 A: [acquire prefill]──prefill──[首token→release]──decode──
+请求 B:                  排队......[acquire]──prefill──[release]──decode──
+请求 C:                                  排队......[acquire]──prefill──...
+```
+
+推荐组合：
+
+| 场景 | 配置 |
+|---|---|
+| 只限制 prefill，放满 decode | `--max-prefill-concurrency 2` |
+| prefill + 总 in-flight 都限制 | `--max-prefill-concurrency 2 --max-concurrency 8` |
+| 兼容旧行为（无区分） | `--max-concurrency 4`（prefill 不单独控） |
+
+> 若两者都设，必须 `max-prefill-concurrency ≤ max-concurrency`。
 
 ---
 
@@ -75,15 +114,15 @@ python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
   --metric-percentiles 50,90,95,99 \
   --ready-check-timeout-sec 2000 \
   --chain-after-complete \
-  --increment-interval-min 2 \
-  --increment-interval-max 20 \
-  --max-concurrency 4 \
+  --increment-interval-min 20 \
+  --increment-interval-max 60 \
+  --max-prefill-concurrency 2 \
   --seed 42 \
   --save-result /mnt/beegfs/results/cache-chain-result.json
 ```
 
-`--chain-after-complete` 模式下 B/C 的实际发送时间 = 前一阶段完成时间 + 随机间隔（2~20s）。
-`--max-concurrency 4` 限制同时 in-flight 的请求数。
+`--chain-after-complete` 模式下 B/C 的实际发送时间 = 前一阶段完成时间 + 随机间隔（20~60s）。
+`--max-prefill-concurrency 2` 限制 prefill 阶段最多 2 个请求同时排队，decode 不限。
 
 ---
 
@@ -134,9 +173,9 @@ python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
   --metric-percentiles 50,90,95,99 \
   --ready-check-timeout-sec 2000 \
   --chain-after-complete \
-  --increment-interval-min 2 \
-  --increment-interval-max 20 \
-  --max-concurrency 4 \
+  --increment-interval-min 20 \
+  --increment-interval-max 60 \
+  --max-prefill-concurrency 2 \
   --seed 42 \
   --save-result /mnt/beegfs/results/conv-chain-result.json
 ```
@@ -205,3 +244,67 @@ vllm bench serve --backend openai-chat \
 - `make_cache_hit_schedule.py --disable-shuffle` 流式读 A/B/C 直接写出。
 - `split_conversation_chain.py` 纯文本解析，无 tokenizer 依赖，869 组秒级完成。
 - `scheduled_openai_chat_bench.py` 复用单个 aiohttp session，增量解析 SSE chunk。
+
+---
+
+## Baseline（Strategy A, 100 groups, max-prefill-concurrency=3）
+
+GLM-5-FP8 on g0033:17000, interval 20~60s, 300 requests (100×A/B/C):
+
+```bash
+cd /mnt/beegfs/khr/bench && \
+python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
+  --schedule-path /mnt/beegfs/khr/bench/bench-70k-ABC-schedule.jsonl \
+  --base-url http://g0033:17000 \
+  --endpoint /v1/chat/completions \
+  --model /ssd/models/GLM-5-FP8/ \
+  --metric-percentiles 50,90,95,99 \
+  --ready-check-timeout-sec 2000 \
+  --chain-after-complete \
+  --increment-interval-min 20 \
+  --increment-interval-max 60 \
+  --seed 42 \
+  --max-prefill-concurrency 3
+
+================= Scheduled Benchmark Result =================
+Successful requests: 300
+Failed requests: 0
+Benchmark duration (s): 978.81
+Request throughput (req/s): 0.31
+Output token throughput (tok/s): 78.39
+Peak output token throughput (tok/s): 132.00
+Peak concurrent requests: 7
+Total token throughput (tok/s): 29307.76
+Total input tokens: 28610015
+Total output tokens: 76728
+Mean TTFT (ms): 9707.15
+P50 TTFT (ms): 9869.48
+P90 TTFT (ms): 12930.49
+P95 TTFT (ms): 13622.94
+P99 TTFT (ms): 14775.28
+Mean TPOT (ms): 9.74
+P50 TPOT (ms): 9.77
+P90 TPOT (ms): 15.22
+P95 TPOT (ms): 16.37
+P99 TPOT (ms): 20.52
+Mean ITL (ms): 20.43
+P50 ITL (ms): 1.17
+P90 ITL (ms): 40.44
+P95 ITL (ms): 40.99
+P99 ITL (ms): 81.46
+Mean E2EL (ms): 12187.61
+P50 E2EL (ms): 12357.62
+P90 E2EL (ms): 14913.92
+P95 E2EL (ms): 15667.90
+P99 E2EL (ms): 17038.40
+==============================================================
+```
+
+| Key metric | Value |
+|---|---|
+| P50 TTFT | 9.87 s |
+| P99 TTFT | 14.78 s |
+| Mean TPOT | 9.74 ms |
+| Output throughput | 78.39 tok/s |
+| Peak concurrent | 7 |
+| Failure rate | 0% |
