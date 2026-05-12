@@ -10,19 +10,19 @@ conda activate vllm_test
 cd /mnt/beegfs/khr/bench
 ```
 
-This package provides two complementary strategies for prefix-cache chain benchmarking,
-sharing the same runner (`scheduled_openai_chat_bench.py`).
+This package provides three complementary benchmark strategies sharing the
+same runner (`scheduled_openai_chat_bench.py`).
 
-| | Strategy A: Synthetic Fill | Strategy B: Conversation Chain |
-|---|---|---|
-| **用途** | 纯 prefill / cache 性能测试 | cache + **模型精度** 同时验证 |
-| **数据来源** | bench.jsonl 随机采样 + 合成填充文本 | bench.jsonl 长度 ≥100k 字符的长对话 |
-| **前置链** | A → A+填充 → A+填充+填充 | A=前50k token → B=前70k token → C=完整对话 |
-| **预期输出** | 无（模型自由生成） | 每条带 `expected_response`，可直接对比 |
-| **制备脚本** | `prepare_cache_chain_data.sh` | `prepare_conv_chain_data.sh` |
-| **schedule 文件** | `bench-70k-ABC-schedule.jsonl` | `bench-conv-chain-schedule.jsonl` |
-| **组数** | 可配置（默认 100） | 自动使用全部长对话（~869 组） |
-| **Token 范围** | A: ~70k, B: ~100k, C: ~120-142k | A: ~50k, B: ~70k, C: 67k-210k |
+| | Strategy A: Synthetic Fill | Strategy B: Conversation Chain | Strategy C: Cold Long-Context Prefill |
+|---|---|---|---|
+| **用途** | 纯 prefill / cache 性能测试 | cache + **模型精度** 同时验证 | 不 cache hit 的超长 C 段冷 prefill OOM 压力测试 |
+| **数据来源** | bench.jsonl 随机采样 + 合成填充文本 | bench.jsonl 长度 ≥100k 字符的长对话 | Strategy A 生成的 C 段 |
+| **前置链** | A → A+填充 → A+填充+填充 | A=前50k token → B=前70k token → C=完整对话 | 只发送 C，不发送 A/B |
+| **预期输出** | 无（模型自由生成） | 每条带 `expected_response`，可直接对比 | 无；建议 `output_tokens=1` 隔离 prefill |
+| **制备脚本** | `prepare_cache_chain_data.sh` | `prepare_conv_chain_data.sh` | `prepare_cold_prefill_data.sh` |
+| **schedule 文件** | `bench-70k-ABC-schedule.jsonl` | `bench-conv-chain-schedule.jsonl` | `bench-70k-C-only-cold-schedule.jsonl` |
+| **组数** | 可配置（默认 100） | 自动使用全部长对话（~869 组） | 与 Strategy A 的 C 段数量一致，可 `LIMIT` 截断 |
+| **Token 范围** | A: ~70k, B: ~100k, C: ~120-142k | A: ~50k, B: ~70k, C: 67k-210k | C-only: ~120-142k |
 
 ---
 
@@ -33,7 +33,9 @@ sharing the same runner (`scheduled_openai_chat_bench.py`).
 - `generate_initial_distribution_a.py` — 从 bench.jsonl 采样生成 A 分布
 - `generate_prefix_chain_datasets.py` — 从 A 生成 B/C（合成填充文本）
 - `split_conversation_chain.py` — 从 bench.jsonl 长对话切分出 A/B/C 前置链
-- `CACHE_CHAIN_BENCH_README.md` — 本文档
+- `prepare_cache_chain_data.sh` — 生成 Strategy A 的 A/B/C 数据和 schedule
+- `prepare_conv_chain_data.sh` — 生成 Strategy B 的真实对话链 schedule
+- `prepare_cold_prefill_data.sh` — 从 A/B/C schedule 抽取 C-only 冷 prefill schedule
 
 ---
 
@@ -199,7 +201,99 @@ python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
 
 ---
 
-## 指标说明（两种策略共用）
+## Strategy C: Cold Long-Context Prefill — 冷 cache 超长文本 OOM 压力测试
+
+### 测试目标
+
+这个策略专门用于回答一个问题：**在没有 prefix-cache hit 的情况下，平均 C 段长度的请求直接进入 prefill，会不会让 prefill 实例 OOM。**
+
+它和 Strategy A 共享同一批合成 A/B/C 数据，但运行时只发送 C 段：
+
+- 不发送 A/B，所以不会主动构造 prefix cache hit。
+- 不使用 `--chain-after-complete`，因为这里不是链式 cache 测试。
+- 建议冷启动服务，或换 `SEED` 重新生成 prompt，避免同一服务里已经存在相同前缀的 KV cache。
+- 默认把 C-only 请求的 `output_tokens` 改成 1，尽量隔离 prefill 压力；如需同时观察 decode，可设置 `OUTPUT_TOKENS=256`。
+
+### 数据制备
+
+先生成 Strategy A 的 A/B/C 数据。这里建议保留 C 段默认长度分布，只把输出长度压到 1：
+
+```bash
+OUTPUT_TOKENS=1 \
+NUM_SAMPLES=100 \
+bash /mnt/beegfs/khr/bench/prepare_cache_chain_data.sh
+```
+
+再从 A/B/C schedule 中抽出 C-only 冷 prefill schedule：
+
+```bash
+OUTPUT_TOKENS=1 \
+INTERVAL=0 \
+bash /mnt/beegfs/khr/bench/prepare_cold_prefill_data.sh
+```
+
+Defaults:
+
+```text
+OUT_DIR=/mnt/beegfs/khr/bench
+INPUT_SCHEDULE=/mnt/beegfs/khr/bench/bench-70k-ABC-schedule.jsonl
+OUTPUT_SCHEDULE=/mnt/beegfs/khr/bench/bench-70k-C-only-cold-schedule.jsonl
+STAGE=C
+INTERVAL=0              # 所有 C 请求立刻排队，由 --max-prefill-concurrency 控制压力
+LIMIT=0                 # 0 = 使用全部 C 请求
+OUTPUT_TOKENS=1         # 0 = 保留原 schedule 的 output_tokens
+```
+
+Produce:
+- `bench-70k-C-only-cold-schedule.jsonl` — 只包含 C 段的冷 prefill schedule
+
+### 单请求 Canary
+
+先用 1 条 C 请求验证模型、context length、服务端参数都能跑通：
+
+```bash
+python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
+  --schedule-path /mnt/beegfs/khr/bench/bench-70k-C-only-cold-schedule.jsonl \
+  --base-url http://g0033:17000 \
+  --endpoint /v1/chat/completions \
+  --model /ssd/models/GLM-5-FP8/ \
+  --limit 1 \
+  --metric-percentiles 50,90,95,99 \
+  --ready-check-timeout-sec 2000 \
+  --max-prefill-concurrency 1 \
+  --max-concurrency 1 \
+  --save-result /mnt/beegfs/results/c-cold-canary-1.json
+```
+
+### Prefill 并发压力测试
+
+从小并发开始逐步增加，观察在哪个 `max-prefill-concurrency` 下出现 OOM、超时或服务端 worker 崩溃：
+
+```bash
+for n in 1 2 3 4; do
+  python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
+    --schedule-path /mnt/beegfs/khr/bench/bench-70k-C-only-cold-schedule.jsonl \
+    --base-url http://g0033:17000 \
+    --endpoint /v1/chat/completions \
+    --model /ssd/models/GLM-5-FP8/ \
+    --metric-percentiles 50,90,95,99 \
+    --ready-check-timeout-sec 2000 \
+    --max-prefill-concurrency "${n}" \
+    --max-concurrency "${n}" \
+    --save-result "/mnt/beegfs/results/c-cold-prefill-${n}.json"
+done
+```
+
+判断方式：
+
+- benchmark 输出中的 `Failed requests` 是否大于 0。
+- 结果 JSON 中每条失败请求的 `error` 字段。
+- vLLM server 日志中是否出现 CUDA OOM、worker exit、request timeout。
+- 对这个策略，`TTFT` 和失败率比整体吞吐更重要；`output_tokens=1` 时 `TPOT` 不具备参考意义。
+
+---
+
+## 指标说明（三种策略共用）
 
 | 指标 | 含义 |
 |---|---|
