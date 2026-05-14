@@ -402,3 +402,88 @@ P99 E2EL (ms): 17038.40
 | Output throughput | 78.39 tok/s |
 | Peak concurrent | 7 |
 | Failure rate | 0% |
+
+---
+
+## Strategy A2: 20k-200k Incremental Chain
+
+This variant keeps the same synthetic prefix-cache idea, but replaces the fixed
+A/B/C chain with a dynamic chain:
+
+- A is sampled from `bench.jsonl` with tokenizer lengths in `[20k, 200k]`.
+- Every later request in the same group is the previous prompt plus synthetic
+  filler, targeting `ceil(previous_tokens * 1.10)`.
+- If the next target would exceed `200000` input tokens, that request is not
+  generated. No `>200k` request is kept.
+- Each row carries `stage_index`; `scheduled_openai_chat_bench.py` uses it for
+  `--chain-after-complete` ordering.
+
+### Data preparation
+
+```bash
+bash /mnt/beegfs/khr/bench/prepare_incremental_cache_chain_data.sh
+```
+
+Defaults:
+
+```text
+INPUT_DATASET=/mnt/beegfs/dataset/bench.jsonl
+MODEL_PATH=/ssd/models/GLM-5-FP8
+OUT_DIR=/mnt/beegfs/khr/bench
+NUM_SAMPLES=100
+MIN_TOKENS=20000   MAX_TOKENS=200000
+MEAN_TOKENS=70000  STD_TOKENS=18000
+INCREMENT_RATIO=0.10
+OUTPUT_TOKENS=256  SEED=42
+REQUEST_RATE=0.7   BURSTINESS=1.0   STATIC_T=0
+```
+
+Produces:
+
+- `bench-20k-200k-A.jsonl` - A distribution.
+- `bench-20k-200k-inc10-schedule.jsonl` - dynamic chain schedule.
+- `bench-20k-200k-inc10-vllm.jsonl` - vLLM bench serve format.
+
+### Run benchmark
+
+```bash
+python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
+  --schedule-path /mnt/beegfs/khr/bench/bench-20k-200k-inc10-schedule.jsonl \
+  --base-url http://g0033:17000 \
+  --endpoint /v1/chat/completions \
+  --model /ssd/models/GLM-5-FP8/ \
+  --metric-percentiles 50,90,95,99 \
+  --ready-check-timeout-sec 2000 \
+  --chain-after-complete \
+  --increment-interval-min 20 \
+  --increment-interval-max 60 \
+  --max-prefill-concurrency 2 \
+  --seed 42 \
+  --save-result /mnt/beegfs/results/cache-chain-inc10-200k-result.json
+```
+
+For cold prefill on the last stage of each dynamic group:
+
+```bash
+INPUT_SCHEDULE=/mnt/beegfs/khr/bench/bench-20k-200k-inc10-schedule.jsonl \
+OUTPUT_SCHEDULE=/mnt/beegfs/khr/bench/bench-20k-200k-inc10-last-cold-schedule.jsonl \
+STAGE=last \
+OUTPUT_TOKENS=1 \
+INTERVAL=0 \
+bash /mnt/beegfs/khr/bench/prepare_cold_prefill_data.sh
+```
+
+vLLM bench serve format:
+
+```bash
+vllm bench serve --backend openai-chat \
+  --dataset-name custom \
+  --dataset-path /mnt/beegfs/khr/bench/bench-20k-200k-inc10-vllm.jsonl \
+  --num-prompts -1 \
+  --base-url http://g0033:17000 \
+  --model /ssd/models/GLM-5-FP8/ \
+  --request-rate 0.8 \
+  --disable-shuffle \
+  --custom-output-len -1 \
+  --skip-chat-template
+```

@@ -112,6 +112,19 @@ def read_schedule(path: str, limit: int | None) -> list[dict[str, Any]]:
     return rows
 
 
+def chain_stage_order(row: dict[str, Any]) -> int:
+    stage_index = row.get("stage_index")
+    if isinstance(stage_index, int):
+        return stage_index
+    if isinstance(stage_index, str):
+        try:
+            return int(stage_index)
+        except ValueError:
+            pass
+    stage_order = {"A": 0, "B": 1, "C": 2}
+    return stage_order.get(str(row.get("stage", "")), 99)
+
+
 def group_schedule(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     grouped: dict[Any, list[dict[str, Any]]] = {}
     for row in rows:
@@ -120,12 +133,11 @@ def group_schedule(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
             raise ValueError("--chain-after-complete requires every row to have group_id")
         grouped.setdefault(group_id, []).append(row)
 
-    stage_order = {"A": 0, "B": 1, "C": 2}
     groups = []
     for _, group_rows in grouped.items():
         group_rows.sort(
             key=lambda row: (
-                stage_order.get(str(row.get("stage", "")), 99),
+                chain_stage_order(row),
                 float(row["scheduled_time"]),
             )
         )

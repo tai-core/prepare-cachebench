@@ -11,7 +11,7 @@ OUT_DIR="${OUT_DIR:-/mnt/beegfs/khr/bench}"
 INPUT_SCHEDULE="${INPUT_SCHEDULE:-${OUT_DIR}/bench-70k-ABC-schedule.jsonl}"
 OUTPUT_SCHEDULE="${OUTPUT_SCHEDULE:-${OUT_DIR}/bench-70k-C-only-cold-schedule.jsonl}"
 
-STAGE="${STAGE:-C}"
+STAGE="${STAGE:-C}"          # Use STAGE=last to select the last stage per group.
 INTERVAL="${INTERVAL:-0}"
 LIMIT="${LIMIT:-0}"
 
@@ -47,11 +47,36 @@ with input_path.open("r", encoding="utf-8") as fin:
         if not line:
             continue
         row = json.loads(line)
+        if stage == "last":
+            rows.append(row)
+            continue
         if row.get("stage") != stage:
             continue
         rows.append(row)
         if limit and len(rows) >= limit:
             break
+
+if stage == "last":
+    latest_by_group = {}
+    for row in rows:
+        group_id = row.get("group_id")
+        if group_id is None:
+            raise ValueError("STAGE=last requires every row to have group_id")
+        stage_index = row.get("stage_index")
+        if isinstance(stage_index, str):
+            try:
+                stage_index = int(stage_index)
+            except ValueError:
+                stage_index = None
+        if not isinstance(stage_index, int):
+            fallback_order = {"A": 0, "B": 1, "C": 2}
+            stage_index = fallback_order.get(str(row.get("stage", "")), -1)
+        current = latest_by_group.get(group_id)
+        if current is None or stage_index > current[0]:
+            latest_by_group[group_id] = (stage_index, row)
+    rows = [value[1] for _, value in sorted(latest_by_group.items(), key=lambda item: item[0])]
+    if limit:
+        rows = rows[:limit]
 
 if not rows:
     raise ValueError(f"No rows with stage={stage!r} found in {input_path}")
@@ -60,9 +85,10 @@ token_lengths = []
 with output_path.open("w", encoding="utf-8") as fout:
     for index, row in enumerate(rows):
         rewritten = dict(row)
-        rewritten["request_id"] = f"{index}:{stage}-cold"
+        original_stage = str(row.get("stage", stage))
+        rewritten["request_id"] = f"{index}:{original_stage}-cold"
         rewritten["group_id"] = index
-        rewritten["stage"] = f"{stage}-cold"
+        rewritten["stage"] = f"{original_stage}-cold"
         rewritten["scheduled_time"] = index * interval
         if output_tokens:
             rewritten["output_tokens"] = output_tokens
