@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 INPUT_DATASET="${INPUT_DATASET:-/mnt/beegfs/dataset/bench.jsonl}"
-MODEL_PATH="${MODEL_PATH:-/ssd/models/GLM-5-FP8}"
+MODEL_PATH="${MODEL_PATH:-/ssd/models/GLM-5.1-FP8}"
 OUT_DIR="${OUT_DIR:-/mnt/beegfs/khr/bench}"
 
 A_DATASET="${A_DATASET:-${OUT_DIR}/bench-70k.jsonl}"

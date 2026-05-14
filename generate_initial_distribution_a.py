@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate initial A benchmark JSONL")
     parser.add_argument("--input", default="/mnt/beegfs/dataset/bench.jsonl")
     parser.add_argument("--output", default="/mnt/beegfs/khr/bench/bench-70k.jsonl")
-    parser.add_argument("--model", default="/ssd/models/GLM-5-FP8")
+    parser.add_argument("--model", default="/ssd/models/GLM-5.1-FP8")
     parser.add_argument("--num-samples", type=int, default=700)
     parser.add_argument("--min-tokens", type=int, default=20000)
     parser.add_argument("--max-tokens", type=int, default=128000)

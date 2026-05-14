@@ -81,7 +81,7 @@ Defaults:
 
 ```text
 INPUT_DATASET=/mnt/beegfs/dataset/bench.jsonl
-MODEL_PATH=/ssd/models/GLM-5-FP8
+MODEL_PATH=/ssd/models/GLM-5.1-FP8
 OUT_DIR=/mnt/beegfs/khr/bench
 NUM_SAMPLES=100
 MIN_TOKENS=20000   MAX_TOKENS=128000
@@ -112,7 +112,7 @@ python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
   --schedule-path /mnt/beegfs/khr/bench/bench-70k-ABC-schedule.jsonl \
   --base-url http://g0033:17000 \
   --endpoint /v1/chat/completions \
-  --model /ssd/models/GLM-5-FP8/ \
+  --model /ssd/models/GLM-5.1-FP8/ \
   --metric-percentiles 50,90,95,99 \
   --ready-check-timeout-sec 2000 \
   --chain-after-complete \
@@ -171,7 +171,7 @@ python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
   --schedule-path /mnt/beegfs/khr/bench/bench-conv-chain-schedule.jsonl \
   --base-url http://g0033:17000 \
   --endpoint /v1/chat/completions \
-  --model /ssd/models/GLM-5-FP8/ \
+  --model /ssd/models/GLM-5.1-FP8/ \
   --metric-percentiles 50,90,95,99 \
   --ready-check-timeout-sec 2000 \
   --chain-after-complete \
@@ -256,7 +256,7 @@ python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
   --schedule-path /mnt/beegfs/khr/bench/bench-70k-C-only-cold-schedule.jsonl \
   --base-url http://g0033:17000 \
   --endpoint /v1/chat/completions \
-  --model /ssd/models/GLM-5-FP8/ \
+  --model /ssd/models/GLM-5.1-FP8/ \
   --limit 1 \
   --metric-percentiles 50,90,95,99 \
   --ready-check-timeout-sec 2000 \
@@ -275,7 +275,7 @@ for n in 1 2 3 4; do
     --schedule-path /mnt/beegfs/khr/bench/bench-70k-C-only-cold-schedule.jsonl \
     --base-url http://g0033:17000 \
     --endpoint /v1/chat/completions \
-    --model /ssd/models/GLM-5-FP8/ \
+    --model /ssd/models/GLM-5.1-FP8/ \
     --metric-percentiles 50,90,95,99 \
     --ready-check-timeout-sec 2000 \
     --max-prefill-concurrency "${n}" \
@@ -320,7 +320,7 @@ vllm bench serve --backend openai-chat \
   --dataset-path /mnt/beegfs/khr/bench/bench-70k-ABC-vllm.jsonl \
   --num-prompts 300 \
   --base-url http://g0033:17000 \
-  --model /ssd/models/GLM-5-FP8/ \
+  --model /ssd/models/GLM-5.1-FP8/ \
   --request-rate 0.8 \
   --disable-shuffle \
   --custom-output-len -1 \
@@ -343,7 +343,7 @@ vllm bench serve --backend openai-chat \
 
 ## Baseline（Strategy A, 100 groups, max-prefill-concurrency=3）
 
-GLM-5-FP8 on g0033:17000, interval 20~60s, 300 requests (100×A/B/C):
+GLM-5.1-FP8 on g0033:17000, interval 20~60s, 300 requests (100×A/B/C):
 
 ```bash
 cd /mnt/beegfs/khr/bench && \
@@ -351,7 +351,7 @@ python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
   --schedule-path /mnt/beegfs/khr/bench/bench-70k-ABC-schedule.jsonl \
   --base-url http://g0033:17000 \
   --endpoint /v1/chat/completions \
-  --model /ssd/models/GLM-5-FP8/ \
+  --model /ssd/models/GLM-5.1-FP8/ \
   --metric-percentiles 50,90,95,99 \
   --ready-check-timeout-sec 2000 \
   --chain-after-complete \
@@ -428,7 +428,7 @@ Defaults:
 
 ```text
 INPUT_DATASET=/mnt/beegfs/dataset/bench.jsonl
-MODEL_PATH=/ssd/models/GLM-5-FP8
+MODEL_PATH=/ssd/models/GLM-5.1-FP8
 OUT_DIR=/mnt/beegfs/khr/bench
 NUM_SAMPLES=100
 MIN_TOKENS=20000   MAX_TOKENS=200000
@@ -451,7 +451,7 @@ python3 /mnt/beegfs/khr/bench/scheduled_openai_chat_bench.py \
   --schedule-path /mnt/beegfs/khr/bench/bench-20k-200k-inc10-schedule.jsonl \
   --base-url http://g0033:17000 \
   --endpoint /v1/chat/completions \
-  --model /ssd/models/GLM-5-FP8/ \
+  --model /ssd/models/GLM-5.1-FP8/ \
   --metric-percentiles 50,90,95,99 \
   --ready-check-timeout-sec 2000 \
   --chain-after-complete \
@@ -481,7 +481,7 @@ vllm bench serve --backend openai-chat \
   --dataset-path /mnt/beegfs/khr/bench/bench-20k-200k-inc10-vllm.jsonl \
   --num-prompts -1 \
   --base-url http://g0033:17000 \
-  --model /ssd/models/GLM-5-FP8/ \
+  --model /ssd/models/GLM-5.1-FP8/ \
   --request-rate 0.8 \
   --disable-shuffle \
   --custom-output-len -1 \
