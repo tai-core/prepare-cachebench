@@ -20,6 +20,9 @@ MIN_TOKENS="${MIN_TOKENS:-20000}"
 MAX_TOKENS="${MAX_TOKENS:-200000}"
 MEAN_TOKENS="${MEAN_TOKENS:-70000}"
 STD_TOKENS="${STD_TOKENS:-18000}"
+TAIL_SAMPLES="${TAIL_SAMPLES:-10}"
+TAIL_MIN_TOKENS="${TAIL_MIN_TOKENS:-160000}"
+TAIL_MAX_TOKENS="${TAIL_MAX_TOKENS:-200000}"
 INCREMENT_RATIO="${INCREMENT_RATIO:-0.10}"
 SEED="${SEED:-42}"
 OUTPUT_TOKENS="${OUTPUT_TOKENS:-256}"
@@ -44,6 +47,9 @@ python3 "${SCRIPT_DIR}/generate_initial_distribution_a.py" \
   --max-tokens "${MAX_TOKENS}" \
   --mean-tokens "${MEAN_TOKENS}" \
   --std-tokens "${STD_TOKENS}" \
+  --tail-samples "${TAIL_SAMPLES}" \
+  --tail-min-tokens "${TAIL_MIN_TOKENS}" \
+  --tail-max-tokens "${TAIL_MAX_TOKENS}" \
   --seed "${SEED}" \
   --output-tokens "${OUTPUT_TOKENS}" \
   --trust-remote-code

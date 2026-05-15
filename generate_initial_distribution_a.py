@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate the initial A distribution for prefix-cache benchmarks.
 
-The default target is 700 prompts from /mnt/beegfs/dataset/bench.jsonl with
-token lengths in [20k, 128k], sampled to approximate a truncated normal
-distribution centered at 70k tokens.
+The default target samples prompts from /mnt/beegfs/dataset/bench.jsonl to keep
+the combined A distribution near 70k average tokens. An optional forced long
+tail can reserve part of --num-samples for very long cold A prompts.
 
 Efficiency choices:
 - First pass stores only file offsets and token lengths, not full prompts.
@@ -36,7 +36,25 @@ def parse_args() -> argparse.Namespace:
         "--std-tokens",
         type=int,
         default=18000,
-        help="Normal stddev before truncation. 18k gives most mass within 20k-128k.",
+        help="Normal stddev before truncation for the non-tail body.",
+    )
+    parser.add_argument(
+        "--tail-samples",
+        type=int,
+        default=0,
+        help="Number of samples forced into a long-token tail. Included in --num-samples.",
+    )
+    parser.add_argument(
+        "--tail-min-tokens",
+        type=int,
+        default=None,
+        help="Lower token bound for forced tail samples. Defaults to max_tokens - 40000.",
+    )
+    parser.add_argument(
+        "--tail-max-tokens",
+        type=int,
+        default=None,
+        help="Upper token bound for forced tail samples. Defaults to --max-tokens.",
     )
     parser.add_argument("--bins", type=int, default=36)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -95,18 +113,24 @@ def bin_index(token_len: int, min_tokens: int, max_tokens: int, bins: int) -> in
     return max(0, min(bins - 1, int((token_len - min_tokens) / width)))
 
 
-def target_bin_counts(args: argparse.Namespace, available: list[int]) -> list[int]:
+def target_bin_counts(
+    args: argparse.Namespace,
+    available: list[int],
+    num_samples: int,
+    mean_tokens: float | None = None,
+) -> list[int]:
+    center_tokens = args.mean_tokens if mean_tokens is None else mean_tokens
     width = (args.max_tokens - args.min_tokens) / args.bins
     weights = []
     for i in range(args.bins):
         center = args.min_tokens + (i + 0.5) * width
-        z = (center - args.mean_tokens) / args.std_tokens
+        z = (center - center_tokens) / args.std_tokens
         weights.append(math.exp(-0.5 * z * z))
 
     total_weight = sum(weights)
-    raw = [args.num_samples * weight / total_weight for weight in weights]
+    raw = [num_samples * weight / total_weight for weight in weights]
     counts = [min(available[i], int(math.floor(raw[i]))) for i in range(args.bins)]
-    remaining = args.num_samples - sum(counts)
+    remaining = num_samples - sum(counts)
 
     fractional_order = sorted(
         range(args.bins),
@@ -125,6 +149,136 @@ def target_bin_counts(args: argparse.Namespace, available: list[int]) -> list[in
         if not progressed:
             break
     return counts
+
+
+def flatten_candidates(candidates: list[list[tuple[int, int]]]) -> list[tuple[int, int]]:
+    return [item for bucket in candidates for item in bucket]
+
+
+def candidates_without_offsets(
+    candidates: list[list[tuple[int, int]]],
+    excluded_offsets: set[int],
+) -> list[list[tuple[int, int]]]:
+    if not excluded_offsets:
+        return candidates
+    return [
+        [item for item in bucket if item[0] not in excluded_offsets]
+        for bucket in candidates
+    ]
+
+
+def candidates_below_token(
+    candidates: list[list[tuple[int, int]]],
+    max_exclusive: int,
+) -> list[list[tuple[int, int]]]:
+    return [
+        [item for item in bucket if item[1] < max_exclusive]
+        for bucket in candidates
+    ]
+
+
+def select_tail_candidates(
+    args: argparse.Namespace,
+    candidates: list[list[tuple[int, int]]],
+    rng: random.Random,
+    max_tail_samples: int,
+) -> list[tuple[int, int]]:
+    if args.tail_samples <= 0 or max_tail_samples <= 0:
+        return []
+
+    tail_target = min(args.tail_samples, max_tail_samples)
+    tail_pool = [
+        item
+        for item in flatten_candidates(candidates)
+        if args.tail_min_tokens <= item[1] <= args.tail_max_tokens
+    ]
+    if len(tail_pool) < tail_target and not args.allow_fewer:
+        raise ValueError(
+            f"Only {len(tail_pool)} tail candidates found in "
+            f"[{args.tail_min_tokens}, {args.tail_max_tokens}], fewer than "
+            f"--tail-samples {tail_target}. Use --allow-fewer or relax tail bounds."
+        )
+
+    tail_target = min(tail_target, len(tail_pool))
+    if tail_target == 0:
+        return []
+
+    selected: list[tuple[int, int]] = []
+    width = (args.tail_max_tokens - args.tail_min_tokens) / tail_target
+    for i in range(tail_target):
+        low = args.tail_min_tokens + i * width
+        high = args.tail_min_tokens + (i + 1) * width
+        bucket = []
+        for item in tail_pool:
+            token_len = item[1]
+            if i == tail_target - 1:
+                in_bucket = low <= token_len <= high
+            else:
+                in_bucket = low <= token_len < high
+            if in_bucket:
+                bucket.append(item)
+        if bucket:
+            selected.append(rng.choice(bucket))
+
+    if len(selected) < tail_target:
+        selected_offsets = {offset for offset, _ in selected}
+        leftovers = [item for item in tail_pool if item[0] not in selected_offsets]
+        selected.extend(rng.sample(leftovers, tail_target - len(selected)))
+
+    lengths = [token_len for _, token_len in selected]
+    print(
+        f"Forced tail: count={len(selected)}, avg={sum(lengths) / len(lengths):.1f}, "
+        f"min={min(lengths)}, max={max(lengths)}, "
+        f"range=[{args.tail_min_tokens}, {args.tail_max_tokens}]"
+    )
+    return selected
+
+
+def select_normal_candidates(
+    args: argparse.Namespace,
+    candidates: list[list[tuple[int, int]]],
+    rng: random.Random,
+    target: int,
+    mean_tokens: float | None = None,
+) -> list[tuple[int, int]]:
+    if target <= 0:
+        return []
+
+    available = [len(bucket) for bucket in candidates]
+    total_available = sum(available)
+    target = min(target, total_available)
+    counts = target_bin_counts(args, available, target, mean_tokens)
+
+    selected: list[tuple[int, int]] = []
+    for bucket, count in zip(candidates, counts):
+        if count > 0:
+            selected.extend(rng.sample(bucket, count))
+
+    if len(selected) < target:
+        selected_set = {offset for offset, _ in selected}
+        leftovers = [item for bucket in candidates for item in bucket if item[0] not in selected_set]
+        selected.extend(rng.sample(leftovers, target - len(selected)))
+
+    return selected
+
+
+def body_mean_for_target_average(
+    args: argparse.Namespace,
+    tail_selected: list[tuple[int, int]],
+    body_samples: int,
+    total_samples: int,
+) -> float:
+    if not tail_selected or body_samples <= 0:
+        return float(args.mean_tokens)
+
+    tail_total = sum(token_len for _, token_len in tail_selected)
+    desired_body_mean = (args.mean_tokens * total_samples - tail_total) / body_samples
+    clamped_body_mean = max(args.min_tokens, min(args.max_tokens, desired_body_mean))
+    print(
+        f"Body target mean: {clamped_body_mean:.1f} "
+        f"(adjusted to keep total A avg near {args.mean_tokens})"
+    )
+    return clamped_body_mean
 
 
 def scan_candidates(args: argparse.Namespace, tokenizer: Any) -> list[list[tuple[int, int]]]:
@@ -190,20 +344,28 @@ def select_candidates(
         )
 
     target = min(args.num_samples, total_available)
-    original_num_samples = args.num_samples
-    args.num_samples = target
-    counts = target_bin_counts(args, available)
-    args.num_samples = original_num_samples
-
-    selected: list[tuple[int, int]] = []
-    for bucket, count in zip(candidates, counts):
-        if count > 0:
-            selected.extend(rng.sample(bucket, count))
-
-    if len(selected) < target:
-        selected_set = {offset for offset, _ in selected}
-        leftovers = [item for bucket in candidates for item in bucket if item[0] not in selected_set]
-        selected.extend(rng.sample(leftovers, target - len(selected)))
+    selected = select_tail_candidates(args, candidates, rng, target)
+    remaining_candidates = candidates_without_offsets(
+        candidates,
+        {offset for offset, _ in selected},
+    )
+    body_target = target - len(selected)
+    if args.tail_samples > 0:
+        remaining_candidates = candidates_below_token(
+            remaining_candidates,
+            args.tail_min_tokens,
+        )
+        body_available = sum(len(bucket) for bucket in remaining_candidates)
+        if body_available < body_target and not args.allow_fewer:
+            raise ValueError(
+                f"Only {body_available} non-tail candidates found below "
+                f"{args.tail_min_tokens}, fewer than required body samples {body_target}. "
+                "Use --allow-fewer, lower --tail-samples, or relax token bounds."
+            )
+    body_mean = body_mean_for_target_average(args, selected, body_target, target)
+    selected.extend(
+        select_normal_candidates(args, remaining_candidates, rng, body_target, body_mean)
+    )
 
     rng.shuffle(selected)
     return selected
@@ -264,6 +426,21 @@ def main() -> None:
         raise ValueError("Invalid token range")
     if args.std_tokens <= 0:
         raise ValueError("--std-tokens must be positive")
+    if args.tail_samples < 0:
+        raise ValueError("--tail-samples must be non-negative")
+    if args.tail_samples > args.num_samples:
+        raise ValueError("--tail-samples cannot exceed --num-samples")
+    if args.tail_samples > 0:
+        if args.tail_max_tokens is None:
+            args.tail_max_tokens = args.max_tokens
+        if args.tail_min_tokens is None:
+            args.tail_min_tokens = max(args.min_tokens, args.tail_max_tokens - 40000)
+        if args.tail_min_tokens < args.min_tokens:
+            raise ValueError("--tail-min-tokens cannot be smaller than --min-tokens")
+        if args.tail_max_tokens > args.max_tokens:
+            raise ValueError("--tail-max-tokens cannot be larger than --max-tokens")
+        if args.tail_max_tokens <= args.tail_min_tokens:
+            raise ValueError("--tail-max-tokens must be greater than --tail-min-tokens")
     if args.bins <= 0:
         raise ValueError("--bins must be positive")
     if args.batch_size <= 0:

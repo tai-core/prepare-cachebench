@@ -410,7 +410,9 @@ P99 E2EL (ms): 17038.40
 This variant keeps the same synthetic prefix-cache idea, but replaces the fixed
 A/B/C chain with a dynamic chain:
 
-- A is sampled from `bench.jsonl` with tokenizer lengths in `[20k, 200k]`.
+- A is sampled from `bench.jsonl` with tokenizer lengths in `[20k, 200k]`:
+  the combined A distribution targets 70k average tokens while reserving a
+  small forced cold long tail up to 200k tokens.
 - Every later request in the same group is the previous prompt plus synthetic
   filler, targeting `ceil(previous_tokens * 1.10)`.
 - If the next target would exceed `200000` input tokens, that request is not
@@ -433,6 +435,7 @@ OUT_DIR=/mnt/beegfs/khr/bench
 NUM_SAMPLES=100
 MIN_TOKENS=20000   MAX_TOKENS=200000
 MEAN_TOKENS=70000  STD_TOKENS=18000
+TAIL_SAMPLES=10    TAIL_MIN_TOKENS=160000  TAIL_MAX_TOKENS=200000
 INCREMENT_RATIO=0.10
 OUTPUT_TOKENS=256  SEED=42
 REQUEST_RATE=0.7   BURSTINESS=1.0   STATIC_T=0
