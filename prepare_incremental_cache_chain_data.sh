@@ -23,6 +23,8 @@ STD_TOKENS="${STD_TOKENS:-18000}"
 TAIL_SAMPLES="${TAIL_SAMPLES:-10}"
 TAIL_MIN_TOKENS="${TAIL_MIN_TOKENS:-160000}"
 TAIL_MAX_TOKENS="${TAIL_MAX_TOKENS:-200000}"
+TAIL_SYNTHETIC_IF_NEEDED="${TAIL_SYNTHETIC_IF_NEEDED:-1}"
+TAIL_SYNTHETIC_MAX_PARTS="${TAIL_SYNTHETIC_MAX_PARTS:-4}"
 INCREMENT_RATIO="${INCREMENT_RATIO:-0.10}"
 SEED="${SEED:-42}"
 OUTPUT_TOKENS="${OUTPUT_TOKENS:-256}"
@@ -37,6 +39,11 @@ STATIC_T="${STATIC_T:-0}"
 
 mkdir -p "${OUT_DIR}"
 
+tail_synthetic_args=("--tail-synthetic-max-parts" "${TAIL_SYNTHETIC_MAX_PARTS}")
+if [[ "${TAIL_SYNTHETIC_IF_NEEDED}" == "0" ]]; then
+  tail_synthetic_args+=("--no-tail-synthetic-if-needed")
+fi
+
 echo "[1/3] Generating initial A distribution: ${A_DATASET}"
 python3 "${SCRIPT_DIR}/generate_initial_distribution_a.py" \
   --input "${INPUT_DATASET}" \
@@ -50,6 +57,7 @@ python3 "${SCRIPT_DIR}/generate_initial_distribution_a.py" \
   --tail-samples "${TAIL_SAMPLES}" \
   --tail-min-tokens "${TAIL_MIN_TOKENS}" \
   --tail-max-tokens "${TAIL_MAX_TOKENS}" \
+  "${tail_synthetic_args[@]}" \
   --seed "${SEED}" \
   --output-tokens "${OUTPUT_TOKENS}" \
   --trust-remote-code
